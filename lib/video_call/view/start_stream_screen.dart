@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:melody_meets/config/theme.dart';
 import 'package:melody_meets/video_call/api/live_stream_repository.dart';
-import 'package:melody_meets/video_call/service/agora_service.dart';
 import 'package:melody_meets/video_call/view/broad_caster_screen.dart';
 
 class StartStreamScreen extends ConsumerStatefulWidget {
@@ -22,6 +21,17 @@ class _StartStreamScreenState extends ConsumerState<StartStreamScreen> {
     _titleController.dispose();
     _descriptionController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Reset loading state when screen is revisited
+    if (_isLoading) {
+      setState(() {
+        _isLoading = false;
+      });
+    }
   }
 
   Future<void> _startStream() async {

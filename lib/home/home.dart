@@ -1,14 +1,17 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:melody_meets/config/theme.dart';
 import 'package:melody_meets/home/provider/feed_provider.dart';
 import 'package:melody_meets/home/view/search_screen.dart';
+import 'package:melody_meets/profile/provider/profile_provider.dart';
 import 'package:melody_meets/profile/view/profile_screen.dart';
+import 'package:melody_meets/songs/provider/song_state_provider.dart';
 
 import 'package:melody_meets/songs/schema/songs.dart';
 import 'package:melody_meets/songs/widget/feed_song_card.dart';
 import 'package:melody_meets/songs/widget/song_player_modal.dart';
-import 'package:melody_meets/video_call/api/live_stream_repository.dart';
 import 'package:melody_meets/video_call/model/live_stream.dart';
 import 'package:melody_meets/video_call/view/start_stream_screen.dart';
 import 'package:melody_meets/video_call/widget/live_stream_card.dart';
@@ -16,31 +19,178 @@ import 'package:melody_meets/video_call/widget/live_stream_card.dart';
 import 'package:pull_to_refresh_flutter3/pull_to_refresh_flutter3.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-// Add a provider for live streams from followed users
-final followedLiveStreamsProvider = FutureProvider<List<LiveStream>>((
-  ref,
-) async {
-  // Get followed users
-  final currentUserId = Supabase.instance.client.auth.currentUser?.id;
-  if (currentUserId == null) return [];
+// Create a provider for live streams that updates in real-time
+final followedLiveStreamsProvider =
+    StateNotifierProvider<LiveStreamNotifier, AsyncValue<List<LiveStream>>>((
+      ref,
+    ) {
+      return LiveStreamNotifier(ref);
+    });
 
-  final followingResponse = await Supabase.instance.client
-      .from('follows')
-      .select('following_id')
-      .eq('follower_id', currentUserId);
+// State notifier that manages live streams and handles real-time updates
+class LiveStreamNotifier extends StateNotifier<AsyncValue<List<LiveStream>>> {
+  final Ref ref;
+  RealtimeChannel? _channel;
+  List<String>? _followingIds;
 
-  final followingIds =
-      followingResponse
-          .map((follow) => follow['following_id'] as String)
-          .toList();
+  LiveStreamNotifier(this.ref) : super(const AsyncValue.loading()) {
+    _initializeFollowingAndStreams();
+  }
 
-  if (followingIds.isEmpty) return [];
+  // Initialize with following IDs and then fetch streams
+  Future<void> _initializeFollowingAndStreams() async {
+    try {
+      await _fetchFollowingIds();
+      await _fetchLiveStreams();
+      _setupRealtimeSubscription();
+    } catch (e) {
+      debugPrint('Error initializing live streams: $e');
+      state = AsyncValue.error(e, StackTrace.current);
+    }
+  }
 
-  // Get live streams from those users
-  return ref
-      .read(liveStreamRepositoryProvider)
-      .getLiveStreamsByUsers(followingIds);
-});
+  // Fetch following IDs separately
+  Future<void> _fetchFollowingIds() async {
+    final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+    if (currentUserId == null) {
+      _followingIds = [];
+      return;
+    }
+
+    try {
+      // Get followed users
+      final followingResponse = await Supabase.instance.client
+          .from('follows')
+          .select('following_id')
+          .eq('follower_id', currentUserId);
+
+      _followingIds =
+          followingResponse
+              .map((follow) => follow['following_id'] as String)
+              .toList();
+
+      debugPrint('🔴 Following ${_followingIds!.length} users: $_followingIds');
+    } catch (e) {
+      debugPrint('🔴 Error fetching following IDs: $e');
+      _followingIds = [];
+    }
+  }
+
+  // Fetch live streams of followed users
+  Future<void> _fetchLiveStreams() async {
+    if (_followingIds == null || _followingIds!.isEmpty) {
+      state = const AsyncValue.data([]);
+      return;
+    }
+
+    try {
+      // IMPORTANT: Set state to loading so UI shows loading indicator
+      state = const AsyncValue.loading();
+
+      debugPrint('🔴 Querying live streams for users: $_followingIds');
+
+      // Get active live streams - DO NOT FILTER BY has_host_connected YET
+      final response = await Supabase.instance.client
+          .from('live_streams')
+          .select('''
+            *,
+            accounts!inner(
+              id, 
+              username, 
+              email, 
+              image_url, 
+              created_at
+            )
+          ''')
+          .eq('is_active', true)
+          .inFilter('user_id', _followingIds!)
+          .order('created_at', ascending: false);
+
+      // Debug ALL streams before filtering
+      final allStreams =
+          response.map((data) => LiveStream.fromJson(data)).toList();
+      debugPrint('🔴 Found ${allStreams.length} active streams total');
+      for (final stream in allStreams) {
+        debugPrint(
+          '🔴 Stream ${stream.id}: has_host_connected=${stream.has_host_connected}',
+        );
+      }
+
+      // Now filter by has_host_connected to get final list
+      final liveStreams =
+          allStreams
+              .where((stream) => stream.has_host_connected == true)
+              .toList();
+
+      debugPrint(
+        '🔴 After filtering, showing ${liveStreams.length} streams with connected hosts',
+      );
+      state = AsyncValue.data(liveStreams);
+    } catch (e) {
+      debugPrint('🔴 Error fetching live streams: $e');
+      state = AsyncValue.error(e, StackTrace.current);
+    }
+  }
+
+  // Set up real-time subscription that listens to ALL changes
+  void _setupRealtimeSubscription() {
+    // First unsubscribe from any existing channel
+    _channel?.unsubscribe();
+
+    // Create a single channel with multiple listeners
+    final channel = Supabase.instance.client.channel('db-changes');
+
+    // Add subscription for live_streams table changes
+    channel.onPostgresChanges(
+      event: PostgresChangeEvent.insert,
+      schema: 'public',
+      table: 'live_streams',
+      callback: (payload) {
+        debugPrint('🔴 LIVE STREAM INSERTED: ${payload.newRecord}');
+        _fetchLiveStreams();
+      },
+    );
+
+    channel.onPostgresChanges(
+      event: PostgresChangeEvent.update,
+      schema: 'public',
+      table: 'live_streams',
+      callback: (payload) {
+        debugPrint('🔴 LIVE STREAM UPDATED: ${payload.newRecord}');
+        _fetchLiveStreams();
+      },
+    );
+
+    channel.onPostgresChanges(
+      event: PostgresChangeEvent.delete,
+      schema: 'public',
+      table: 'live_streams',
+      callback: (payload) {
+        debugPrint('🔴 LIVE STREAM DELETED');
+        _fetchLiveStreams();
+      },
+    );
+
+    // Subscribe to the channel
+    channel.subscribe((status, [error]) {
+      debugPrint('🔴 Subscription status: $status, Error: $error');
+    });
+
+    _channel = channel;
+  }
+
+  // Refresh live streams manually
+  Future<void> refresh() async {
+    await _fetchFollowingIds();
+    await _fetchLiveStreams();
+  }
+
+  @override
+  void dispose() {
+    _channel?.unsubscribe();
+    super.dispose();
+  }
+}
 
 class HomeScreen extends ConsumerStatefulWidget {
   static const routeName = '/home';
@@ -134,7 +284,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       _returnedToScreen = true;
 
       // Refresh the feed when coming back to this screen
-      // This ensures new songs created elsewhere will show up
       Future.microtask(() {
         if (mounted) {
           _onRefresh();
@@ -158,7 +307,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         _scrollController.jumpTo(0);
       }
 
+      // Refresh live streams
+      await ref.read(followedLiveStreamsProvider.notifier).refresh();
+
+      // Refresh feed
       await ref.read(feedNotifier.notifier).refreshFeed();
+
       if (mounted) {
         _refreshController.refreshCompleted();
       }
@@ -232,7 +386,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         header: WaterDropHeader(
           waterDropColor: AppTheme.primaryColor,
           complete: Icon(Icons.check, color: AppTheme.primaryColor),
-
           refresh: CircularProgressIndicator(color: AppTheme.primaryColor),
         ),
         footer: CustomFooter(
@@ -292,8 +445,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       slivers: [
         SliverToBoxAdapter(
           child: liveStreamsState.when(
-            loading: () => const SizedBox.shrink(),
-            error: (_, __) => const SizedBox.shrink(),
+            loading:
+                () => const Center(
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(vertical: 24.0),
+                    child: CircularProgressIndicator(),
+                  ),
+                ),
+            error: (error, stack) {
+              debugPrint('Error loading live streams: $error');
+              return const SizedBox.shrink();
+            },
             data: (liveStreams) {
               if (liveStreams.isEmpty) return const SizedBox.shrink();
 
@@ -313,13 +475,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                             color: Colors.red,
                             borderRadius: BorderRadius.circular(4),
                           ),
-                          child: const Text(
-                            'LIVE',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 12,
-                            ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.circle, color: Colors.white, size: 8),
+                              SizedBox(width: 4),
+                              Text(
+                                'LIVE',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                         const SizedBox(width: 8),
@@ -343,7 +512,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                               ),
                             ).then((_) {
                               // Refresh live streams when returning
-                              ref.invalidate(followedLiveStreamsProvider);
+                              ref
+                                  .read(followedLiveStreamsProvider.notifier)
+                                  .refresh();
                             });
                           },
                           style: TextButton.styleFrom(
@@ -353,28 +524,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       ],
                     ),
                   ),
-                  SizedBox(
-                    height: 220,
-                    child: ListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      itemCount: liveStreams.length,
-                      itemBuilder: (context, index) {
-                        return SizedBox(
-                          width: 280,
-                          child: Padding(
-                            padding: EdgeInsets.only(
-                              right: index < liveStreams.length - 1 ? 16 : 0,
-                            ),
-                            child: LiveStreamCard(
-                              liveStream: liveStreams[index],
-                            ),
-                          ),
-                        );
-                      },
-                    ),
+                  ListView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: liveStreams.length,
+                    itemBuilder: (context, index) {
+                      return LiveStreamCard(liveStream: liveStreams[index]);
+                    },
                   ),
-                  const SizedBox(height: 16),
                   const Divider(height: 1, thickness: 1),
                 ],
               );
@@ -400,10 +557,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                             () => ref
                                 .read(feedNotifier.notifier)
                                 .toggleLike(song.id!),
-                        onBookmark:
-                            () => ref
-                                .read(feedNotifier.notifier)
-                                .toggleBookmark(song.id!),
+                        onBookmark: () {
+                          ref
+                              .read(feedNotifier.notifier)
+                              .toggleBookmark(song.id!);
+                          ref.invalidate(profileProvider(song.user_id!));
+                          ref.invalidate(songStateProvider(song.id!));
+                        },
                         onProfileTap: (id) => _navigateToProfile(context, id),
                         onTap: () => _showSongPlayer(song),
                       );
@@ -529,14 +689,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   final song = songs[index];
                   return FeedSongCard(
                     song: song,
-                    onLike:
-                        () => ref
-                            .read(feedNotifier.notifier)
-                            .toggleLike(song.id!),
-                    onBookmark:
-                        () => ref
-                            .read(feedNotifier.notifier)
-                            .toggleBookmark(song.id!),
+                    onLike: () {
+                      ref.read(feedNotifier.notifier).toggleLike(song.id!);
+                      ref.invalidate(profileProvider(song.user_id!));
+                      ref.invalidate(songStateProvider(song.id!));
+                    },
+                    onBookmark: () {
+                      ref.read(feedNotifier.notifier).toggleBookmark(song.id!);
+                      ref.invalidate(profileProvider(song.user_id!));
+                      ref.invalidate(songStateProvider(song.id!));
+                    },
                     onProfileTap: (id) => _navigateToProfile(context, id),
                     onTap: () => _showSongPlayer(song),
                   );

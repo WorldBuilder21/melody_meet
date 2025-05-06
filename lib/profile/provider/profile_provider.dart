@@ -5,6 +5,7 @@ import 'package:melody_meets/profile/model/profile_state.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:flutter/material.dart';
+import 'package:melody_meets/songs/provider/song_state_provider.dart';
 
 part 'profile_provider.g.dart';
 
@@ -13,6 +14,7 @@ part 'profile_provider.g.dart';
 class Profile extends _$Profile {
   final SupabaseClient _supabase = Supabase.instance.client;
   bool _isDisposed = false;
+  RealtimeChannel? _bookmarksChannel;
 
   FutureOr<ProfileState> build(String userId) {
     // Cache isCurrentUser to avoid disposal issues
@@ -20,7 +22,40 @@ class Profile extends _$Profile {
     _isCurrentUser = currentUserId == userId;
     _isDisposed = false;
 
+    // Set up real-time bookmark monitoring if this is the current user
+    if (_isCurrentUser) {
+      _setupBookmarkSubscription(currentUserId!);
+    }
+
     return _loadProfile(userId);
+  }
+
+  // Add this new method for real-time bookmark updates
+  void _setupBookmarkSubscription(String currentUserId) {
+    // Clean up any existing subscription
+    _bookmarksChannel?.unsubscribe();
+
+    // Subscribe to changes in bookmarks table
+    _bookmarksChannel = _supabase
+        .channel('bookmarks-${currentUserId}')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'song_bookmarks',
+          callback: (payload) {
+            debugPrint('🔵 Bookmark change detected: ${payload.eventType}');
+
+            // Only process if this involves the current user
+            if (payload.newRecord?['user_id'] == currentUserId ||
+                payload.oldRecord?['user_id'] == currentUserId) {
+              // Refresh saved songs immediately
+              refreshSavedSongs();
+            }
+          },
+        )
+        .subscribe((status, [error]) {
+          debugPrint('🔵 Bookmark subscription status: $status, Error: $error');
+        });
   }
 
   // Cache this value to avoid accessing Supabase during disposal
@@ -395,6 +430,10 @@ class Profile extends _$Profile {
           }
         }
       }
+
+      // Refresh the song state
+
+      ref.invalidate(profileProvider(userId));
     } catch (e) {
       debugPrint('Error toggling like: $e');
 
@@ -440,6 +479,7 @@ class Profile extends _$Profile {
     if (state.value == null || _isDisposed) return;
 
     final songRepo = ref.read(songRepositoryProvider);
+    final songStateNotifier = ref.read(songStateProvider(songId).notifier);
 
     // Check if this is in songs list or saved songs list
     var updatedSongs = [...state.value!.songs];
@@ -453,33 +493,55 @@ class Profile extends _$Profile {
     Songs? songToUpdate;
     bool currentlyBookmarked = false;
 
+    // First, try to get the song from our lists
     if (songsIndex != -1) {
       songToUpdate = updatedSongs[songsIndex];
-      currentlyBookmarked = songToUpdate.isBookmarked!;
-
-      // Update in songs list
-      updatedSongs[songsIndex] = songToUpdate.copyWith(
-        isBookmarked: !currentlyBookmarked,
-      );
-
-      debugPrint(
-        'Toggling bookmark for song $songId in songs list. Was bookmarked: $currentlyBookmarked',
-      );
-    }
-
-    // Handle saved songs tab updates
-    if (savedSongsIndex != -1) {
+      currentlyBookmarked = songToUpdate.isBookmarked ?? false;
+    } else if (savedSongsIndex != -1) {
       songToUpdate = updatedSavedSongs[savedSongsIndex];
       currentlyBookmarked = true;
-
-      // Remove from saved songs list if unbookmarking
-      debugPrint('Removing song $songId from saved songs list (unbookmarking)');
-      updatedSavedSongs.removeAt(savedSongsIndex);
-    } else if (songsIndex != -1 && !currentlyBookmarked) {
-      // Add to saved songs if bookmarking
-      debugPrint('Adding song $songId to saved songs list (bookmarking)');
-      updatedSavedSongs.add(songToUpdate!.copyWith(isBookmarked: true));
     }
+
+    // If we don't have the song in our lists, fetch it
+    if (songToUpdate == null) {
+      try {
+        songToUpdate = await songRepo.getSongById(songId);
+        if (songToUpdate != null) {
+          currentlyBookmarked = songToUpdate.isBookmarked ?? false;
+        }
+      } catch (e) {
+        debugPrint('Error fetching song for bookmark toggle: $e');
+        return;
+      }
+    }
+
+    if (songToUpdate == null) {
+      debugPrint('Could not find song to bookmark');
+      return;
+    }
+
+    // Update the bookmark state
+    final newBookmarkState = !currentlyBookmarked;
+    final updatedSong = songToUpdate.copyWith(isBookmarked: newBookmarkState);
+
+    // Update in songs list if present
+    if (songsIndex != -1) {
+      updatedSongs[songsIndex] = updatedSong;
+    }
+
+    // Update saved songs list
+    if (newBookmarkState) {
+      // Add to saved songs if not already there
+      if (!updatedSavedSongs.any((s) => s.id == songId)) {
+        updatedSavedSongs.add(updatedSong);
+      }
+    } else {
+      // Remove from saved songs
+      updatedSavedSongs.removeWhere((s) => s.id == songId);
+    }
+
+    // Update song state
+    songStateNotifier.updateSong(updatedSong);
 
     // Update UI immediately
     state = AsyncValue.data(
@@ -490,23 +552,93 @@ class Profile extends _$Profile {
       // Update in database
       await songRepo.toggleBookmark(songId);
 
-      // Refresh saved songs from server after a short delay
-      // This ensures our local state matches the server state
-      Future.delayed(const Duration(milliseconds: 500), () {
-        if (_isDisposed) return;
-        refreshSavedSongs();
-      });
+      // Force refresh all relevant providers
+      ref.invalidate(profileProvider(userId));
+      ref.invalidate(songStateProvider(songId));
+
+      // Refresh saved songs after a short delay to ensure consistency
+      await Future.delayed(const Duration(milliseconds: 300));
+      if (!_isDisposed) {
+        await refreshSavedSongs();
+
+        // Fetch fresh song data and update all instances
+        final freshSong = await songRepo.getSongById(songId);
+        if (freshSong != null) {
+          // Update the song state provider
+          songStateNotifier.updateSong(freshSong);
+
+          // Update any instances in our lists
+          final updatedSongs = [...state.value!.songs];
+          final songIndex = updatedSongs.indexWhere((s) => s.id == songId);
+          if (songIndex != -1) {
+            updatedSongs[songIndex] = freshSong;
+          }
+
+          final updatedSavedSongs = [...state.value!.savedSongs];
+          if (freshSong.isBookmarked == true) {
+            if (!updatedSavedSongs.any((s) => s.id == songId)) {
+              updatedSavedSongs.add(freshSong);
+            }
+          } else {
+            updatedSavedSongs.removeWhere((s) => s.id == songId);
+          }
+
+          // Update state with fresh data
+          state = AsyncValue.data(
+            state.value!.copyWith(
+              songs: updatedSongs,
+              savedSongs: updatedSavedSongs,
+            ),
+          );
+        }
+      }
+
+      await refreshSavedSongs();
+
+      // Force refresh all relevant providers again
+      ref.invalidate(profileProvider(userId));
+      ref.invalidate(songStateProvider(songId));
     } catch (e) {
       debugPrint('Error toggling bookmark: $e');
 
       // Revert UI on error
-      state = AsyncValue.data(
-        state.value!.copyWith(
-          songs: state.value!.songs,
-          savedSongs: state.value!.savedSongs,
-          error: 'Failed to update bookmark status: $e',
-        ),
-      );
+      if (!_isDisposed) {
+        try {
+          final song = await songRepo.getSongById(songId);
+          if (song != null) {
+            final revertedSongs = [...state.value!.songs];
+            final revertedSavedSongs = [...state.value!.savedSongs];
+
+            final songIndex = revertedSongs.indexWhere((s) => s.id == songId);
+            if (songIndex != -1) {
+              revertedSongs[songIndex] = song;
+            }
+
+            // Only add back to saved songs if it should be there
+            if (song.isBookmarked == true) {
+              if (!revertedSavedSongs.any((s) => s.id == songId)) {
+                revertedSavedSongs.add(song);
+              }
+            } else {
+              revertedSavedSongs.removeWhere((s) => s.id == songId);
+            }
+
+            state = AsyncValue.data(
+              state.value!.copyWith(
+                songs: revertedSongs,
+                savedSongs: revertedSavedSongs,
+                error: 'Failed to update bookmark status: $e',
+              ),
+            );
+
+            // Update song state
+            songStateNotifier.updateSong(song);
+            ref.invalidate(songStateProvider(songId));
+          }
+        } catch (innerError) {
+          debugPrint('Error reverting bookmark state: $innerError');
+        }
+      }
     }
   }
 

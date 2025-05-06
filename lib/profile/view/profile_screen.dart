@@ -15,6 +15,8 @@ import 'package:melody_meets/songs/widget/song_player_modal.dart';
 import 'package:melody_meets/songs/schema/songs.dart';
 import 'package:melody_meets/songs/view/create_song_screen.dart';
 import 'package:melody_meets/songs/view/edit_song_screen.dart';
+import 'package:melody_meets/home/provider/feed_provider.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 /// ProfileScreen displays a user's profile information and songs.
 /// It follows Spotify's design patterns with tabs for songs and saved content.
@@ -40,14 +42,78 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
   // Store auth repository locally
   AuthRepository? _authRepository;
 
+  // Track when we're on the saved songs tab for auto-refresh
+  bool _onSavedSongsTab = false;
+
   @override
   void initState() {
     super.initState();
     // Initialize with 2 tabs: Songs and Saved
     _tabController = TabController(length: 2, vsync: this);
 
+    // Listen for tab changes to refresh saved songs when tab is selected
+    _tabController.addListener(_onTabChanged);
+
     // Initialize auth repository and current user status
     _initializeUserData();
+
+    // Listen for bookmark changes from other screens
+    _setupBookmarkChangeListener();
+  }
+
+  void _onTabChanged() {
+    // Check if we're now on the Saved Songs tab (index 1)
+    final onSavedSongsTab = _tabController.index == 1;
+
+    // If we just navigated to the Saved tab and we're the current user, refresh
+    if (onSavedSongsTab && !_onSavedSongsTab && _isCurrentUser && !_disposed) {
+      debugPrint('🔵 Tab changed to Saved Songs, refreshing bookmarks');
+      ref.read(profileProvider(widget.userId).notifier).refreshSavedSongs();
+    }
+
+    // Update tab tracking state
+    _onSavedSongsTab = onSavedSongsTab;
+  }
+
+  // Listen for bookmark changes from other screens (like Feed)
+  void _setupBookmarkChangeListener() {
+    // Setup one-time listener for bookmark changes in the feed
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.listen(feedNotifier, (previous, current) {
+        if (_disposed) return;
+
+        if (current is AsyncData && previous is AsyncData) {
+          final previousSongs = previous?.value ?? [];
+          final currentSongs = current.value ?? [];
+
+          bool bookmarkChanged = false;
+
+          // Check if any bookmark status changed
+          for (final currentSong in currentSongs) {
+            final previousSong = previousSongs.firstWhere(
+              (s) => s.id == currentSong.id,
+              orElse: () => currentSong,
+            );
+
+            if (previousSong.isBookmarked != currentSong.isBookmarked) {
+              bookmarkChanged = true;
+              debugPrint(
+                '🔵 Bookmark change detected in Feed: ${currentSong.id}',
+              );
+              break;
+            }
+          }
+
+          // If bookmark status changed and we're viewing current user's profile, refresh saved songs
+          if (bookmarkChanged && _isCurrentUser && !_disposed) {
+            debugPrint('🔵 Refreshing profile saved songs due to feed change');
+            ref
+                .read(profileProvider(widget.userId).notifier)
+                .refreshSavedSongs();
+          }
+        }
+      });
+    });
   }
 
   // Safe initialization method
@@ -84,6 +150,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
   @override
   void dispose() {
     _disposed = true;
+    _tabController.removeListener(_onTabChanged);
     _tabController.dispose();
     super.dispose();
   }
@@ -113,6 +180,17 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
             icon: const Icon(Icons.more_vert),
             onPressed: () => _showProfileOptions(),
           ),
+          // Add refresh button for easier testing
+          if (_isCurrentUser)
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              onPressed: () {
+                // Force refresh profile and saved songs
+                ref
+                    .read(profileProvider(widget.userId).notifier)
+                    .refreshProfile();
+              },
+            ),
         ],
       ),
       floatingActionButton: profileState.when(
@@ -218,29 +296,17 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
                       _isCurrentUser ? (song) => _showSongOptions(song) : null,
                   onCreateSongTap:
                       _isCurrentUser ? () => _navigateToCreateSong() : null,
-                  onLike:
-                      (song) => ref
-                          .read(profileProvider(widget.userId).notifier)
-                          .toggleLike(song.id!),
-                  onBookmark:
-                      (song) => ref
-                          .read(profileProvider(widget.userId).notifier)
-                          .toggleBookmark(song.id!),
+                  onLike: (song) => _handleLikeAction(song),
+                  onBookmark: (song) => _handleBookmarkAction(song),
                 ),
 
-                // Saved songs tab
+                // Saved songs tab - with real-time updates
                 SongGrid(
                   songs: state.savedSongs,
                   isCurrentUserProfile: _isCurrentUser,
                   onSongTap: (song) => _showSongDetails(song),
-                  onLike:
-                      (song) => ref
-                          .read(profileProvider(widget.userId).notifier)
-                          .toggleLike(song.id!),
-                  onBookmark:
-                      (song) => ref
-                          .read(profileProvider(widget.userId).notifier)
-                          .toggleBookmark(song.id!),
+                  onLike: (song) => _handleLikeAction(song),
+                  onBookmark: (song) => _handleBookmarkAction(song),
                   onCreateSongTap: null,
                 ),
               ],
@@ -249,6 +315,29 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         },
       ),
     );
+  }
+
+  // Centralized like handling
+  void _handleLikeAction(Songs song) {
+    if (!mounted || _disposed) return;
+
+    // Toggle like in profile provider
+    ref.read(profileProvider(widget.userId).notifier).toggleLike(song.id!);
+  }
+
+  // Centralized bookmark handling with real-time updates
+  void _handleBookmarkAction(Songs song) {
+    if (!mounted || _disposed) return;
+
+    // Toggle bookmark in profile provider
+    ref.read(profileProvider(widget.userId).notifier).toggleBookmark(song.id!);
+
+    // Force immediate refresh of saved songs to ensure real-time updates
+    Future.delayed(Duration.zero, () {
+      if (!_disposed && mounted && _isCurrentUser) {
+        ref.read(profileProvider(widget.userId).notifier).refreshSavedSongs();
+      }
+    });
   }
 
   /// Shows profile options in a bottom sheet
@@ -321,19 +410,13 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
             song: song,
             onSongLiked: (updatedSong) {
               if (!_disposed && mounted) {
-                ref
-                    .read(profileProvider(widget.userId).notifier)
-                    .toggleLike(updatedSong.id!);
+                _handleLikeAction(updatedSong);
               }
-              debugPrint('Song liked: ${updatedSong.id}');
             },
             onSongBookmarked: (updatedSong) {
               if (!_disposed && mounted) {
-                ref
-                    .read(profileProvider(widget.userId).notifier)
-                    .toggleBookmark(updatedSong.id!);
+                _handleBookmarkAction(updatedSong);
               }
-              debugPrint('Song bookmarked: ${updatedSong.id}');
             },
           ),
     );

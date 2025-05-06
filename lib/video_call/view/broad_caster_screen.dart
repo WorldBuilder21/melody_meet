@@ -8,6 +8,7 @@ import 'package:melody_meets/video_call/api/live_stream_repository.dart';
 import 'package:melody_meets/video_call/model/live_stream.dart';
 import 'package:melody_meets/video_call/model/stream_message.dart';
 import 'package:melody_meets/video_call/service/agora_service.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class BroadcasterScreen extends ConsumerStatefulWidget {
   final LiveStream liveStream;
@@ -45,25 +46,79 @@ class _BroadcasterScreenState extends ConsumerState<BroadcasterScreen> {
     super.dispose();
   }
 
-  // Silent version of end stream that doesn't show loading overlay
-  Future<void> _endStreamSilently() async {
-    try {
-      await _agoraService.leaveChannel();
-      await ref
-          .read(liveStreamRepositoryProvider)
-          .endLiveStream(widget.liveStream.id!);
-    } catch (e) {
-      debugPrint('Error ending stream silently: $e');
-      // Don't show UI errors as this is called during disposal
-    }
-  }
-
   Future<void> _initializeStream() async {
     await _agoraService.initialize();
-    await _agoraService.startBroadcast(
-      widget.liveStream.channel_name!,
-      '', // Token goes here if using Agora token authentication
-    );
+    bool streamInitialized = false;
+
+    try {
+      // Start the broadcast first
+      await _agoraService.startBroadcast(
+        widget.liveStream.channel_name!,
+        '', // Empty string for no authentication
+      );
+      streamInitialized = true;
+
+      // Debug the stream ID to make sure it's correct
+      debugPrint(
+        '🔴 Updating host connection for stream ID: ${widget.liveStream.id}',
+      );
+
+      // Update host connection status with better error handling
+      try {
+        await ref
+            .read(liveStreamRepositoryProvider)
+            .updateHostConnectionStatus(widget.liveStream.id!, true);
+
+        // Verify the update worked by fetching the stream record
+        final updatedStream =
+            await Supabase.instance.client
+                .from('live_streams')
+                .select()
+                .eq('id', widget.liveStream.id!)
+                .single();
+
+        final hostConnected = updatedStream['has_host_connected'] as bool;
+        debugPrint('🔴 Host connection status after update: $hostConnected');
+
+        if (!hostConnected) {
+          debugPrint(
+            '🔴 WARNING: Failed to update has_host_connected flag to TRUE',
+          );
+
+          // Try again with a direct update (bypassing user_id check)
+          await Supabase.instance.client
+              .from('live_streams')
+              .update({'has_host_connected': true})
+              .eq('id', widget.liveStream.id!);
+
+          debugPrint('🔴 Attempted direct update without user_id check');
+        }
+      } catch (e) {
+        debugPrint('🔴 Error updating host connection status: $e');
+
+        // Try a direct update as a fallback
+        try {
+          await Supabase.instance.client
+              .from('live_streams')
+              .update({'has_host_connected': true})
+              .eq('id', widget.liveStream.id!);
+          debugPrint('🔴 Used fallback direct update');
+        } catch (fallbackError) {
+          debugPrint('🔴 Fallback update also failed: $fallbackError');
+        }
+      }
+    } catch (e) {
+      debugPrint('Error initializing stream: $e');
+      if (!streamInitialized) {
+        try {
+          await ref
+              .read(liveStreamRepositoryProvider)
+              .endLiveStream(widget.liveStream.id!);
+          debugPrint('Stream marked as inactive due to initialization error');
+        } catch (_) {}
+      }
+      rethrow;
+    }
   }
 
   Future<void> _loadMessages() async {

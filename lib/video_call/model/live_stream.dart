@@ -15,6 +15,8 @@ abstract class LiveStream with _$LiveStream {
     required DateTime? created_at,
     DateTime? ended_at,
     required bool? is_active,
+    required bool? has_host_connected, // Add this field
+    DateTime? host_disconnected_at, // Add this field
     String? thumbnail_url,
     required int? viewer_count,
     Account? user,

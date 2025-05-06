@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:melody_meets/config/theme.dart';
 import 'package:melody_meets/songs/schema/songs.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:melody_meets/songs/provider/song_state_provider.dart';
 
-class FeedSongCard extends StatelessWidget {
+class FeedSongCard extends ConsumerWidget {
   final Songs song;
   final VoidCallback onLike;
   final VoidCallback onBookmark;
@@ -20,7 +22,13 @@ class FeedSongCard extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    // Watch the song state from the provider
+    final songState = ref.watch(songStateProvider(song.id!));
+
+    // Use the latest state from the provider, falling back to the passed song if not available
+    final currentSong = songState ?? song;
+
     return GestureDetector(
       onTap: onTap,
       child: Container(
@@ -43,9 +51,9 @@ class FeedSongCard extends StatelessWidget {
             ClipRRect(
               borderRadius: BorderRadius.circular(8),
               child:
-                  song.image_url != null
+                  currentSong.image_url != null
                       ? CachedNetworkImage(
-                        imageUrl: song.image_url!,
+                        imageUrl: currentSong.image_url!,
                         width: 80,
                         height: 80,
                         fit: BoxFit.cover,
@@ -98,7 +106,7 @@ class FeedSongCard extends StatelessWidget {
                 children: [
                   // Song Title
                   Text(
-                    song.title ?? 'Untitled',
+                    currentSong.title ?? 'Untitled',
                     style: TextStyle(
                       color: AppTheme.whiteColor,
                       fontSize: 16,
@@ -111,9 +119,9 @@ class FeedSongCard extends StatelessWidget {
 
                   // Artist Name - Tappable to navigate to profile
                   GestureDetector(
-                    onTap: () => onProfileTap(song.user_id!),
+                    onTap: () => onProfileTap(currentSong.user_id!),
                     child: Text(
-                      song.artist ?? 'Unknown Artist',
+                      currentSong.artist ?? 'Unknown Artist',
                       style: TextStyle(color: AppTheme.lightGrey, fontSize: 14),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -122,7 +130,7 @@ class FeedSongCard extends StatelessWidget {
                   const SizedBox(height: 8),
 
                   // Genre Tag
-                  if (song.genre != null)
+                  if (currentSong.genre != null)
                     Container(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 8,
@@ -133,7 +141,7 @@ class FeedSongCard extends StatelessWidget {
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: Text(
-                        song.genre!,
+                        currentSong.genre!,
                         style: TextStyle(
                           color: AppTheme.lightGrey,
                           fontSize: 12,
@@ -147,13 +155,19 @@ class FeedSongCard extends StatelessWidget {
                     children: [
                       // Like Button
                       GestureDetector(
-                        onTap: onLike,
+                        onTap: () {
+                          onLike();
+                          // Update the song state in the provider
+                          ref
+                              .read(songStateProvider(currentSong.id!).notifier)
+                              .toggleLike();
+                        },
                         child: Icon(
-                          song.isLiked ?? false
+                          currentSong.isLiked ?? false
                               ? Icons.favorite
                               : Icons.favorite_border,
                           color:
-                              song.isLiked ?? false
+                              currentSong.isLiked ?? false
                                   ? AppTheme.primaryColor
                                   : AppTheme.lightGrey,
                           size: 20,
@@ -163,13 +177,19 @@ class FeedSongCard extends StatelessWidget {
 
                       // Bookmark Button
                       GestureDetector(
-                        onTap: onBookmark,
+                        onTap: () {
+                          onBookmark();
+                          // Update the song state in the provider
+                          ref
+                              .read(songStateProvider(currentSong.id!).notifier)
+                              .toggleBookmark();
+                        },
                         child: Icon(
-                          song.isBookmarked ?? false
+                          currentSong.isBookmarked ?? false
                               ? Icons.bookmark
                               : Icons.bookmark_border,
                           color:
-                              song.isBookmarked ?? false
+                              currentSong.isBookmarked ?? false
                                   ? AppTheme.primaryColor
                                   : AppTheme.lightGrey,
                           size: 20,

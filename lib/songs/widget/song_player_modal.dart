@@ -1,13 +1,14 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:melody_meets/config/theme.dart';
 import 'package:melody_meets/songs/schema/songs.dart';
 import 'package:just_audio/just_audio.dart';
 import 'dart:math';
-
+import 'package:melody_meets/songs/provider/song_state_provider.dart';
 import 'package:melody_meets/songs/view/song_comment_screen.dart';
 
-class SongPlayerModal extends StatefulWidget {
+class SongPlayerModal extends ConsumerStatefulWidget {
   final Songs song;
   final Function(Songs) onSongLiked;
   final Function(Songs) onSongBookmarked;
@@ -20,15 +21,13 @@ class SongPlayerModal extends StatefulWidget {
   });
 
   @override
-  State<SongPlayerModal> createState() => _SongPlayerModalState();
+  ConsumerState<SongPlayerModal> createState() => _SongPlayerModalState();
 }
 
-class _SongPlayerModalState extends State<SongPlayerModal> {
+class _SongPlayerModalState extends ConsumerState<SongPlayerModal> {
   final AudioPlayer _audioPlayer = AudioPlayer();
   bool _isPlaying = false;
   bool _isLoading = true;
-  bool _isLiked = false;
-  bool _isBookmarked = false;
   Duration _duration = Duration.zero;
   Duration _position = Duration.zero;
 
@@ -36,9 +35,6 @@ class _SongPlayerModalState extends State<SongPlayerModal> {
   void initState() {
     super.initState();
     _initAudioPlayer();
-    // Initialize like and bookmark state from song
-    _isLiked = widget.song.isLiked ?? false;
-    _isBookmarked = widget.song.isBookmarked ?? false;
   }
 
   Future<void> _initAudioPlayer() async {
@@ -118,6 +114,12 @@ class _SongPlayerModalState extends State<SongPlayerModal> {
 
   @override
   Widget build(BuildContext context) {
+    // Watch the song state from the provider
+    final songState = ref.watch(songStateProvider(widget.song.id!));
+
+    // Use the latest state from the provider, falling back to the passed song if not available
+    final currentSong = songState ?? widget.song;
+
     return Container(
       height: MediaQuery.of(context).size.height * 0.85,
       decoration: BoxDecoration(
@@ -163,9 +165,9 @@ class _SongPlayerModalState extends State<SongPlayerModal> {
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(16),
                       child:
-                          widget.song.image_url != null
+                          currentSong.image_url != null
                               ? CachedNetworkImage(
-                                imageUrl: widget.song.image_url!,
+                                imageUrl: currentSong.image_url!,
                                 fit: BoxFit.cover,
                                 placeholder:
                                     (context, url) => Container(
@@ -208,7 +210,7 @@ class _SongPlayerModalState extends State<SongPlayerModal> {
 
                   // Song Title
                   Text(
-                    widget.song.title ?? 'Untitled',
+                    currentSong.title ?? 'Untitled',
                     style: TextStyle(
                       color: AppTheme.whiteColor,
                       fontSize: 24,
@@ -221,7 +223,7 @@ class _SongPlayerModalState extends State<SongPlayerModal> {
 
                   // Artist Name
                   Text(
-                    widget.song.artist ?? 'Unknown Artist',
+                    currentSong.artist ?? 'Unknown Artist',
                     style: TextStyle(color: AppTheme.lightGrey, fontSize: 18),
                     textAlign: TextAlign.center,
                   ),
@@ -229,7 +231,7 @@ class _SongPlayerModalState extends State<SongPlayerModal> {
                   const SizedBox(height: 8),
 
                   // Genre Tag
-                  if (widget.song.genre != null)
+                  if (currentSong.genre != null)
                     Container(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 12,
@@ -240,7 +242,7 @@ class _SongPlayerModalState extends State<SongPlayerModal> {
                         borderRadius: BorderRadius.circular(16),
                       ),
                       child: Text(
-                        widget.song.genre!,
+                        currentSong.genre!,
                         style: TextStyle(
                           color: AppTheme.lightGrey,
                           fontSize: 14,
@@ -398,23 +400,27 @@ class _SongPlayerModalState extends State<SongPlayerModal> {
                         children: [
                           IconButton(
                             icon: Icon(
-                              _isLiked ? Icons.favorite : Icons.favorite_border,
+                              currentSong.isLiked ?? false
+                                  ? Icons.favorite
+                                  : Icons.favorite_border,
                               color:
-                                  _isLiked
+                                  currentSong.isLiked ?? false
                                       ? AppTheme.primaryColor
                                       : AppTheme.lightGrey,
                               size: 28,
                             ),
                             onPressed: () {
-                              setState(() {
-                                _isLiked = !_isLiked;
-                              });
-                              widget.onSongLiked(widget.song);
+                              widget.onSongLiked(currentSong);
+                              ref
+                                  .read(
+                                    songStateProvider(currentSong.id!).notifier,
+                                  )
+                                  .toggleLike();
                             },
                           ),
-                          if ((widget.song.likes ?? 0) > 0)
+                          if ((currentSong.likes ?? 0) > 0)
                             Text(
-                              '${widget.song.likes}',
+                              '${currentSong.likes}',
                               style: TextStyle(
                                 fontSize: 12,
                                 color: AppTheme.lightGrey,
@@ -428,23 +434,25 @@ class _SongPlayerModalState extends State<SongPlayerModal> {
                       // Bookmark Button
                       IconButton(
                         icon: Icon(
-                          _isBookmarked
+                          currentSong.isBookmarked ?? false
                               ? Icons.bookmark
                               : Icons.bookmark_border,
                           color:
-                              _isBookmarked
+                              currentSong.isBookmarked ?? false
                                   ? AppTheme.primaryColor
                                   : AppTheme.lightGrey,
                           size: 28,
                         ),
                         onPressed: () {
-                          setState(() {
-                            _isBookmarked = !_isBookmarked;
-                          });
-                          widget.onSongBookmarked(widget.song);
+                          widget.onSongBookmarked(currentSong);
+                          ref
+                              .read(songStateProvider(currentSong.id!).notifier)
+                              .toggleBookmark();
                         },
                       ),
+
                       const SizedBox(width: 24),
+
                       // Modified Comments Button with Count
                       Row(
                         children: [
@@ -460,14 +468,14 @@ class _SongPlayerModalState extends State<SongPlayerModal> {
                                 MaterialPageRoute(
                                   builder:
                                       (context) =>
-                                          SongCommentsScreen(song: widget.song),
+                                          SongCommentsScreen(song: currentSong),
                                 ),
                               );
                             },
                           ),
-                          if ((widget.song.comments_count ?? 0) > 0)
+                          if ((currentSong.comments_count ?? 0) > 0)
                             Text(
-                              '${widget.song.comments_count}',
+                              '${currentSong.comments_count}',
                               style: TextStyle(
                                 fontSize: 12,
                                 color: AppTheme.lightGrey,
@@ -481,8 +489,8 @@ class _SongPlayerModalState extends State<SongPlayerModal> {
                   const SizedBox(height: 24),
 
                   // Description (if available)
-                  if (widget.song.description != null &&
-                      widget.song.description!.isNotEmpty)
+                  if (currentSong.description != null &&
+                      currentSong.description!.isNotEmpty)
                     Container(
                       width: double.infinity,
                       padding: const EdgeInsets.all(16),
@@ -503,7 +511,7 @@ class _SongPlayerModalState extends State<SongPlayerModal> {
                           ),
                           const SizedBox(height: 8),
                           Text(
-                            widget.song.description!,
+                            currentSong.description!,
                             style: TextStyle(
                               color: AppTheme.lightGrey,
                               fontSize: 14,

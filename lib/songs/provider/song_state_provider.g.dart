@@ -1,12 +1,12 @@
 // GENERATED CODE - DO NOT MODIFY BY HAND
 
-part of 'profile_provider.dart';
+part of 'song_state_provider.dart';
 
 // **************************************************************************
 // RiverpodGenerator
 // **************************************************************************
 
-String _$profileHash() => r'ea384b81ceb45b6c513d08896fd38cb535271fc0';
+String _$songStateHash() => r'2d169353da67d532e076ff40c65913afb1c0f814';
 
 /// Copied from Dart SDK
 class _SystemHash {
@@ -29,29 +29,29 @@ class _SystemHash {
   }
 }
 
-abstract class _$Profile extends BuildlessAsyncNotifier<ProfileState> {
-  late final String userId;
+abstract class _$SongState extends BuildlessAutoDisposeNotifier<Songs?> {
+  late final String songId;
 
-  FutureOr<ProfileState> build(String userId);
+  Songs? build(String songId);
 }
 
-/// See also [Profile].
-@ProviderFor(Profile)
-const profileProvider = ProfileFamily();
+/// See also [SongState].
+@ProviderFor(SongState)
+const songStateProvider = SongStateFamily();
 
-/// See also [Profile].
-class ProfileFamily extends Family<AsyncValue<ProfileState>> {
-  /// See also [Profile].
-  const ProfileFamily();
+/// See also [SongState].
+class SongStateFamily extends Family<Songs?> {
+  /// See also [SongState].
+  const SongStateFamily();
 
-  /// See also [Profile].
-  ProfileProvider call(String userId) {
-    return ProfileProvider(userId);
+  /// See also [SongState].
+  SongStateProvider call(String songId) {
+    return SongStateProvider(songId);
   }
 
   @override
-  ProfileProvider getProviderOverride(covariant ProfileProvider provider) {
-    return call(provider.userId);
+  SongStateProvider getProviderOverride(covariant SongStateProvider provider) {
+    return call(provider.songId);
   }
 
   static const Iterable<ProviderOrFamily>? _dependencies = null;
@@ -66,73 +66,74 @@ class ProfileFamily extends Family<AsyncValue<ProfileState>> {
       _allTransitiveDependencies;
 
   @override
-  String? get name => r'profileProvider';
+  String? get name => r'songStateProvider';
 }
 
-/// See also [Profile].
-class ProfileProvider extends AsyncNotifierProviderImpl<Profile, ProfileState> {
-  /// See also [Profile].
-  ProfileProvider(String userId)
+/// See also [SongState].
+class SongStateProvider
+    extends AutoDisposeNotifierProviderImpl<SongState, Songs?> {
+  /// See also [SongState].
+  SongStateProvider(String songId)
     : this._internal(
-        () => Profile()..userId = userId,
-        from: profileProvider,
-        name: r'profileProvider',
+        () => SongState()..songId = songId,
+        from: songStateProvider,
+        name: r'songStateProvider',
         debugGetCreateSourceHash:
             const bool.fromEnvironment('dart.vm.product')
                 ? null
-                : _$profileHash,
-        dependencies: ProfileFamily._dependencies,
-        allTransitiveDependencies: ProfileFamily._allTransitiveDependencies,
-        userId: userId,
+                : _$songStateHash,
+        dependencies: SongStateFamily._dependencies,
+        allTransitiveDependencies: SongStateFamily._allTransitiveDependencies,
+        songId: songId,
       );
 
-  ProfileProvider._internal(
+  SongStateProvider._internal(
     super._createNotifier, {
     required super.name,
     required super.dependencies,
     required super.allTransitiveDependencies,
     required super.debugGetCreateSourceHash,
     required super.from,
-    required this.userId,
+    required this.songId,
   }) : super.internal();
 
-  final String userId;
+  final String songId;
 
   @override
-  FutureOr<ProfileState> runNotifierBuild(covariant Profile notifier) {
-    return notifier.build(userId);
+  Songs? runNotifierBuild(covariant SongState notifier) {
+    return notifier.build(songId);
   }
 
   @override
-  Override overrideWith(Profile Function() create) {
+  Override overrideWith(SongState Function() create) {
     return ProviderOverride(
       origin: this,
-      override: ProfileProvider._internal(
-        () => create()..userId = userId,
+      override: SongStateProvider._internal(
+        () => create()..songId = songId,
         from: from,
         name: null,
         dependencies: null,
         allTransitiveDependencies: null,
         debugGetCreateSourceHash: null,
-        userId: userId,
+        songId: songId,
       ),
     );
   }
 
   @override
-  AsyncNotifierProviderElement<Profile, ProfileState> createElement() {
-    return _ProfileProviderElement(this);
+  AutoDisposeNotifierProviderElement<SongState, Songs?> createElement() {
+    return _SongStateProviderElement(this);
   }
 
   @override
   bool operator ==(Object other) {
-    return other is ProfileProvider && other.userId == userId;
+    return other is SongStateProvider && other.songId == songId;
   }
 
   @override
   int get hashCode {
     var hash = _SystemHash.combine(0, runtimeType.hashCode);
-    hash = _SystemHash.combine(hash, userId.hashCode);
+    hash = _SystemHash.combine(hash, songId.hashCode);
 
     return _SystemHash.finish(hash);
   }
@@ -140,18 +141,18 @@ class ProfileProvider extends AsyncNotifierProviderImpl<Profile, ProfileState> {
 
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
-mixin ProfileRef on AsyncNotifierProviderRef<ProfileState> {
-  /// The parameter `userId` of this provider.
-  String get userId;
+mixin SongStateRef on AutoDisposeNotifierProviderRef<Songs?> {
+  /// The parameter `songId` of this provider.
+  String get songId;
 }
 
-class _ProfileProviderElement
-    extends AsyncNotifierProviderElement<Profile, ProfileState>
-    with ProfileRef {
-  _ProfileProviderElement(super.provider);
+class _SongStateProviderElement
+    extends AutoDisposeNotifierProviderElement<SongState, Songs?>
+    with SongStateRef {
+  _SongStateProviderElement(super.provider);
 
   @override
-  String get userId => (origin as ProfileProvider).userId;
+  String get songId => (origin as SongStateProvider).songId;
 }
 
 // ignore_for_file: type=lint

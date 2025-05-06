@@ -21,6 +21,11 @@ _LiveStream _$LiveStreamFromJson(Map<String, dynamic> json) => _LiveStream(
           ? null
           : DateTime.parse(json['ended_at'] as String),
   is_active: json['is_active'] as bool?,
+  has_host_connected: json['has_host_connected'] as bool?,
+  host_disconnected_at:
+      json['host_disconnected_at'] == null
+          ? null
+          : DateTime.parse(json['host_disconnected_at'] as String),
   thumbnail_url: json['thumbnail_url'] as String?,
   viewer_count: (json['viewer_count'] as num?)?.toInt(),
   user:
@@ -39,6 +44,8 @@ Map<String, dynamic> _$LiveStreamToJson(_LiveStream instance) =>
       'created_at': instance.created_at?.toIso8601String(),
       'ended_at': instance.ended_at?.toIso8601String(),
       'is_active': instance.is_active,
+      'has_host_connected': instance.has_host_connected,
+      'host_disconnected_at': instance.host_disconnected_at?.toIso8601String(),
       'thumbnail_url': instance.thumbnail_url,
       'viewer_count': instance.viewer_count,
       'user': instance.user,

@@ -15,7 +15,7 @@ class LiveStreamRepository {
   final _supabase = Supabase.instance.client;
   final _uuid = const Uuid();
 
-  // Get active live streams
+  // Get active live streams - only return streams with active hosts
   Future<List<LiveStream>> getActiveLiveStreams() async {
     try {
       final response = await _supabase
@@ -31,6 +31,7 @@ class LiveStreamRepository {
             )
           ''')
           .eq('is_active', true)
+          .eq('has_host_connected', true) // Add host connection check
           .order('created_at', ascending: false);
 
       return response.map((data) => LiveStream.fromJson(data)).toList();
@@ -40,7 +41,7 @@ class LiveStreamRepository {
     }
   }
 
-  // Get live streams by user (for following feed)
+  // Get live streams by user (for following feed) - only with active hosts
   Future<List<LiveStream>> getLiveStreamsByUsers(List<String> userIds) async {
     if (userIds.isEmpty) return [];
 
@@ -58,6 +59,7 @@ class LiveStreamRepository {
             )
           ''')
           .eq('is_active', true)
+          .eq('has_host_connected', true) // Add host connection check
           .inFilter('user_id', userIds)
           .order('created_at', ascending: false);
 
@@ -94,6 +96,8 @@ class LiveStreamRepository {
                 'thumbnail_url': thumbnailUrl,
                 'created_at': DateTime.now().toIso8601String(),
                 'is_active': true,
+                'has_host_connected':
+                    false, // Initialize as false until host connects
               })
               .select('''
             *,
@@ -114,7 +118,29 @@ class LiveStreamRepository {
     }
   }
 
-  // End a live stream
+  // Update host connection status
+  Future<void> updateHostConnectionStatus(
+    String streamId,
+    bool isConnected,
+  ) async {
+    final userId = _supabase.auth.currentUser?.id;
+    if (userId == null) {
+      throw Exception('User not authenticated');
+    }
+
+    try {
+      await _supabase
+          .from('live_streams')
+          .update({'has_host_connected': isConnected})
+          .eq('id', streamId)
+          .eq('user_id', userId);
+    } catch (e) {
+      debugPrint('Error updating host connection status: $e');
+      throw Exception('Failed to update host connection status: $e');
+    }
+  }
+
+  // End a live stream or mark as inactive if host disconnects
   Future<void> endLiveStream(String streamId) async {
     final userId = _supabase.auth.currentUser?.id;
     if (userId == null) {
@@ -126,6 +152,7 @@ class LiveStreamRepository {
           .from('live_streams')
           .update({
             'is_active': false,
+            'has_host_connected': false,
             'ended_at': DateTime.now().toIso8601String(),
           })
           .eq('id', streamId)
@@ -133,6 +160,24 @@ class LiveStreamRepository {
     } catch (e) {
       debugPrint('Error ending live stream: $e');
       throw Exception('Failed to end live stream: $e');
+    }
+  }
+
+  // Auto-end stream if host disconnects unexpectedly
+  Future<void> handleHostDisconnect(String streamId) async {
+    try {
+      await _supabase
+          .from('live_streams')
+          .update({
+            'has_host_connected': false,
+            // You can decide whether to also mark is_active as false
+            // 'is_active': false,
+            'host_disconnected_at': DateTime.now().toIso8601String(),
+          })
+          .eq('id', streamId);
+    } catch (e) {
+      debugPrint('Error handling host disconnect: $e');
+      // Don't throw - this is a background operation
     }
   }
 
@@ -211,23 +256,41 @@ class LiveStreamRepository {
   }
 
   // Subscribe to new messages
-  // Subscribe to new messages
   Stream<List<StreamMessage>> subscribeToMessages(String streamId) {
     return _supabase
         .from('live_stream_messages')
         .stream(primaryKey: ['id'])
         .eq('stream_id', streamId)
         .map((data) {
-          // Add proper debug to see what's coming in
           debugPrint('Received ${data.length} messages from subscription');
           return data.map((item) {
-            // Try to add accounts data if missing
             if (item['accounts'] == null) {
-              // Fallback implementation
               return StreamMessage.fromJson(item);
             }
             return StreamMessage.fromJson(item);
           }).toList();
         });
+  }
+
+  // Add a method to check stream status periodically
+  // This can be used in conjunction with a timer to clean up abandoned streams
+  Future<void> cleanupAbandonedStreams() async {
+    try {
+      // Find streams that have been waiting for host for more than 2 minutes
+      final cutoffTime = DateTime.now().subtract(const Duration(minutes: 2));
+
+      await _supabase
+          .from('live_streams')
+          .update({
+            'is_active': false,
+            'ended_at': DateTime.now().toIso8601String(),
+          })
+          .eq('is_active', true)
+          .eq('has_host_connected', false)
+          .lt('created_at', cutoffTime.toIso8601String());
+    } catch (e) {
+      debugPrint('Error cleaning up abandoned streams: $e');
+      // Don't throw - this is a background operation
+    }
   }
 }
